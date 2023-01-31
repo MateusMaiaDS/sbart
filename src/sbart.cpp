@@ -78,6 +78,7 @@ modelParam::modelParam(arma::mat x_train_,
                        double beta_,
                        double tau_mu_,
                        double tau_b_,
+                       double tau_b_intercept_,
                        double tau_,
                        double a_tau_,
                        double d_tau_,
@@ -93,6 +94,7 @@ modelParam::modelParam(arma::mat x_train_,
         beta = beta_;
         tau_mu = tau_mu_;
         tau_b = tau_b_;
+        tau_b_intercept = tau_b_intercept_;
         tau = tau_;
         a_tau = a_tau_;
         d_tau = d_tau_;
@@ -344,11 +346,11 @@ Forest::Forest(modelParam& data){
 }
 
 // Function to delete one tree
-Forest::~Forest(){
-        for(int  i=0;i<trees.size();i++){
-                delete trees[i];
-        }
-}
+// Forest::~Forest(){
+//         for(int  i=0;i<trees.size();i++){
+//                 delete trees[i];
+//         }
+// }
 
 // Selecting a random node
 Node* sample_node(std::vector<Node*> leaves_){
@@ -390,6 +392,8 @@ void grow(Node* tree, modelParam &data, arma::vec &curr_res){
         g_node-> sampleSplitVar(data.x_train.n_cols);
         // Updating the limits
         g_node->getLimits();
+
+
         // Selecting a rule
         g_node->var_split_rule = (g_node->upper-g_node->lower)*rand_unif()+g_node->lower;
 
@@ -619,6 +623,7 @@ void change(Node* tree, modelParam &data, arma::vec &curr_res){
         c_node->getLimits();
         // Selecting a rule
         c_node -> var_split_rule = (c_node->upper-c_node->lower)*rand_unif()+c_node->lower;
+        // c_node -> var_split_rule = 0.0;
 
         // Create an aux for the left and right index
         int train_left_counter = 0;
@@ -753,21 +758,21 @@ void Node::nodeLogLike(modelParam& data, arma::vec &curr_res){
 // Calculating the Loglilelihood of a node
 void Node::splineNodeLogLike(modelParam& data, arma::vec &curr_res){
 
+        // Getting number of leaves in case of a root
+        if(isRoot){
+                n_leaf = data.x_train.n_rows;
+                n_leaf_test = data.x_test.n_rows;
+        }
 
         // When we generate empty nodes we don't want to accept them;
         if(train_index[0]==-1){
+        // if(n_leaf < 2){
                 r_sum = 0;
                 r_sq_sum = 10000;
                 n_leaf = 0;
                 log_likelihood = -2000000; // Absurd value avoid this case
                 return;
         }
-
-        if(isRoot){
-                n_leaf = data.x_train.n_rows;
-                n_leaf_test = data.x_test.n_rows;
-        }
-
         // Creating the B spline
         arma::vec leaf_x(n_leaf);
         arma::vec leaf_x_test(n_leaf_test);
@@ -793,11 +798,14 @@ void Node::splineNodeLogLike(modelParam& data, arma::vec &curr_res){
         arma::mat btb = B_t*B;
         btr = B_t*leaf_res;
         rtr = dot(leaf_res,leaf_res);
+        // arma::mat precision_diag = arma::eye<arma::mat>(B.n_cols,B.n_cols)*(data.tau_b);
         arma::mat precision_diag = arma::eye<arma::mat>(B.n_cols,B.n_cols)*(data.tau_b/data.tau);
+        precision_diag(0,0) = data.tau_b_intercept/data.tau;
+
         inv_btb_p = inv(btb+precision_diag);
 
         arma::mat aux_loglikelihood3 = (btr.t()*(inv_btb_p*btr));
-        log_likelihood =  0.5*log(det(inv_btb_p))- 0.5*data.tau*rtr+0.5*data.tau*aux_loglikelihood3(0,0);
+        log_likelihood = - 2*log(data.tau) -log(data.tau_b) + 0.5*log(det(inv_btb_p))- 0.5*data.tau*rtr+0.5*data.tau*aux_loglikelihood3(0,0);
 
         return;
 
@@ -856,13 +864,6 @@ void getPredictions(Node* tree,
                         cout << " Pay attention something is wrong here" << endl;
                 }
 
-                // cout << "Size of test sample: " << leaf_y_hat.size() << endl;
-                // cout << "Leaf content: ";
-                //
-                // for(int k = 0; k < leaf_y_hat.size();k ++) {
-                //         cout << leaf_y_hat[k] << " ";
-                // }
-
                 // For the training samples
                 for(int j = 0; j<data.x_train.n_rows; j++){
 
@@ -873,8 +874,6 @@ void getPredictions(Node* tree,
                         current_prediction_train[t_nodes[i]->train_index[j]] = leaf_y_hat[j];
                 }
 
-                // cout << "Nodes in terminal node: " << t_nodes[i]->n_leaf_test << endl;
-
                 if(t_nodes[i]->n_leaf_test == 0 ){
                         continue;
                 }
@@ -882,12 +881,6 @@ void getPredictions(Node* tree,
                 // Creating the y_hattest
                 arma::vec leaf_y_hat_test = t_nodes[i]->B_test*t_nodes[i]->betas;
 
-                // cout << "Size of test sample: " << leaf_y_hat_test.size() << endl;
-                // cout << "Leaf content: ";
-                // for(int k = 0; k < leaf_y_hat_test.size();k ++) {
-                //         cout << leaf_y_hat_test[k] << " ";
-                // }
-                // cout << endl;
 
                 // Regarding the test samples
                 for(int j = 0; j< data.x_test.n_rows;j++){
@@ -895,7 +888,7 @@ void getPredictions(Node* tree,
                         if(t_nodes[i]->test_index[j]==-1){
                                 break;
                         }
-                        // cout << "Values: " << leaf_y_hat_test[j] << endl;
+
                         current_prediction_test[t_nodes[i]->test_index[j]] = leaf_y_hat_test[j];
 
                 }
@@ -915,18 +908,97 @@ void updateTau(arma::vec &y_hat,
         return;
 }
 
+// Updating tau b parameter
+void updateTauB(Forest all_trees,
+                modelParam &data,
+                double a_tau_b,
+                double d_tau_b){
+
+
+        double beta_count_total = 0.0;
+        double beta_sq_sum_total = 0.0;
+
+        for(int t = 0; t< all_trees.trees.size();t++){
+
+                Node* tree = all_trees.trees[t];
+
+                // Getting tau_b
+                vector<Node*> t_nodes = leaves(tree);
+
+
+                // Iterating over terminal nodes
+                for(int i = 0; i< t_nodes.size(); i++ ){
+
+                        if(t_nodes[i]->betas.size()<1) {
+                                continue;
+                        }
+
+                        for(int j = 1;j < t_nodes[i]->betas.size();j++){
+                                beta_sq_sum_total = beta_sq_sum_total + t_nodes[i]->betas[j]*t_nodes[i]->betas[j];
+                                beta_count_total ++;
+                        }
+                }
+
+        }
+
+        data.tau_b = R::rgamma((0.5*beta_count_total + a_tau_b),1/(0.5*beta_sq_sum_total+d_tau_b));
+
+
+        return;
+
+}
+
+// Updating tau b parameter
+void updateTauBintercept(Forest all_trees,
+                modelParam &data,
+                double a_tau_b,
+                double d_tau_b){
+
+
+        double beta_count_total = 0.0;
+        double beta_sq_sum_total = 0.0;
+
+        for(int t = 0; t< all_trees.trees.size();t++){
+
+                Node* tree = all_trees.trees[t];
+
+                // Getting tau_b
+                vector<Node*> t_nodes = leaves(tree);
+
+
+                // Iterating over terminal nodes
+                for(int i = 0; i< t_nodes.size(); i++ ){
+
+                        if(t_nodes[i]->betas.size()<1) {
+                                continue;
+                        }
+                        // Getting only the intercept
+                        beta_sq_sum_total = beta_sq_sum_total + t_nodes[i]->betas[0]*t_nodes[i]->betas[0];
+                        beta_count_total ++;
+                }
+
+        }
+
+        data.tau_b_intercept = R::rgamma((0.5*beta_count_total + a_tau_b),1/(0.5*beta_sq_sum_total+d_tau_b));
+
+
+        return;
+
+}
+
 // Creating the BART function
 // [[Rcpp::export]]
-Rcpp::List bart(arma::mat x_train,
+Rcpp::List sbart(arma::mat x_train,
           arma::vec y_train,
           arma::mat x_test,
           int n_tree,
           int n_mcmc,
           int n_burn,
           double tau, double mu,
-          double tau_mu, double tau_b,
+          double tau_mu, double tau_b, double tau_b_intercept,
           double alpha, double beta,
-          double a_tau, double d_tau){
+          double a_tau, double d_tau,
+          double a_tau_b, double d_tau_b){
 
         // Posterior counter
         int curr = 0;
@@ -939,6 +1011,7 @@ Rcpp::List bart(arma::mat x_train,
                         beta,
                         tau_mu,
                         tau_b,
+                        tau_b_intercept,
                         tau,
                         a_tau,
                         d_tau,
@@ -951,10 +1024,15 @@ Rcpp::List bart(arma::mat x_train,
         // Defining those elements
         arma::mat y_train_hat_post = arma::zeros<arma::mat>(data.x_train.n_rows,n_post);
         arma::mat y_test_hat_post = arma::zeros<arma::mat>(data.x_test.n_rows,n_post);
+        arma::cube all_tree_post(y_train.size(),n_tree,n_post,arma::fill::zeros);
         arma::vec tau_post = arma::zeros<arma::vec>(n_post);
+        arma::vec tau_b_post = arma::zeros<arma::vec>(n_post);
+        arma::vec tau_b_post_intercept = arma::zeros<arma::vec>(n_post);
+
 
         // Defining other variables
         arma::vec partial_pred = arma::zeros<arma::vec>(data.x_train.n_rows);
+        // arma::vec partial_pred = (data.y*(n_tree-1))/n_tree;
         arma::vec partial_residuals = arma::zeros<arma::vec>(data.x_train.n_rows);
         arma::mat tree_fits_store = arma::zeros<arma::mat>(data.x_train.n_rows,data.n_tree);
         arma::mat tree_fits_store_test = arma::zeros<arma::mat>(data.x_test.n_rows,data.n_tree);
@@ -1005,7 +1083,8 @@ Rcpp::List bart(arma::mat x_train,
 
                         // Iterating over all trees
                         verb = rand_unif();
-                        // verb = 0.2;
+
+
                         // Selecting the verb
                         if(verb < 0.3){
                                 grow(all_forest.trees[t],data,partial_residuals);
@@ -1025,9 +1104,6 @@ Rcpp::List bart(arma::mat x_train,
                         // Updating the partial pred
                         partial_pred = partial_pred - tree_fits_store.col(t) + prediction_train;
 
-                        // for(int k = 0; k < prediction_test.size(); k++) {
-                        //         cout << prediction_test[k] << " " << endl;
-                        // }
                         tree_fits_store.col(t) = prediction_train;
 
                         prediction_train_sum = prediction_train_sum + prediction_train;
@@ -1040,11 +1116,19 @@ Rcpp::List bart(arma::mat x_train,
                 // Updating the Tau
                 updateTau(partial_pred, data);
 
+
+                // Get the tau
+                updateTauB(all_forest,data,a_tau_b,d_tau_b);
+                updateTauBintercept(all_forest,data,a_tau_b,d_tau_b);
+
                 if(i > n_burn){
                         // Storing the predictions
                         y_train_hat_post.col(curr) = prediction_train_sum;
                         y_test_hat_post.col(curr) = prediction_test_sum;
+                        all_tree_post.slice(curr) = tree_fits_store;
                         tau_post(curr) = data.tau;
+                        tau_b_post(curr) = data.tau_b;
+                        tau_b_post_intercept = data.tau_b_intercept;
                         curr++;
                 }
 
@@ -1070,7 +1154,10 @@ Rcpp::List bart(arma::mat x_train,
 
         return Rcpp::List::create(y_train_hat_post,
                                   y_test_hat_post,
-                                  tau_post);
+                                  tau_post,
+                                  all_tree_post,
+                                  tau_b_post,
+                                  tau_b_post_intercept);
 }
 
 
@@ -1131,6 +1218,7 @@ double test_logtree(arma::mat X,
                         10,
                         0.95,
                         2.0,
+                        1.0,
                         1.0,
                         1.0,
                         1.0,

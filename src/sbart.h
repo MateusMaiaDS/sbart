@@ -17,6 +17,7 @@ struct modelParam {
         double beta;
         double tau_mu;
         double tau_b;
+        double tau_b_intercept;
         double tau;
         double a_tau;
         double d_tau;
@@ -34,6 +35,7 @@ struct modelParam {
                    double beta_,
                    double tau_mu_,
                    double tau_b_,
+                   double tau_b_intercept_,
                    double tau_,
                    double a_tau_,
                    double d_tau_,
@@ -49,7 +51,7 @@ public:
         std::vector<Node*> trees;
 
         Forest(modelParam &data);
-        ~Forest();
+        // ~Forest();
 };
 
 

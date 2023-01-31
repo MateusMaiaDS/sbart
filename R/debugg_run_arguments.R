@@ -1,3 +1,6 @@
+# x_train = x
+# y = y
+# x_test = x_new
 # n_tree = 200
 # n_mcmc = 2000
 # n_burn = 500

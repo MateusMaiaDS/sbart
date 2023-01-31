@@ -10,7 +10,8 @@ rbart <- function(x_train,
                  beta = 2,
                  df = 3,
                  sigquant = 0.9,
-                 kappa = 2) {
+                 kappa = 2,
+                 scale_bool = TRUE) {
 
      # Verifying if x_train and x_test are matrices
      if(!is.matrix(x_train) || !is.matrix(x_test)){
@@ -35,22 +36,26 @@ rbart <- function(x_train,
      x_test_scale <- x_test
 
      # Normalising all the columns
-     # for(i in 1:ncol(x_train)){
-     #      x_train_scale[,i] <- normalize_covariates_bart(y = x_train[,i],a = x_min[i], b = x_max[i])
-     #      x_test_scale[,i] <- normalize_covariates_bart(y = x_train[,i],a = x_min[i], b = x_max[i])
-     # }
+     for(i in 1:ncol(x_train)){
+             x_train_scale[,i] <- normalize_covariates_bart(y = x_train[,i],a = x_min[i], b = x_max[i])
+             x_test_scale[,i] <- normalize_covariates_bart(y = x_test[,i],a = x_min[i], b = x_max[i])
+     }
 
-     x_train_scale <- x_train_original
-     x_test_scale <- x_test_original
+     # x_train_scale <- x_train_original
+     # x_test_scale <- x_test_original
 
      # Scaling the y
      min_y <- min(y)
      max_y <- max(y)
-     y_scale <- normalize_bart(y = y,a = min_y,b = max_y)
+     if(scale_bool){
+        y_scale <- normalize_bart(y = y,a = min_y,b = max_y)
+     } else {
+        y_scale <- y
+     }
 
      # Calculating \tau_{mu}
      tau_b <- tau_mu <- (4*n_tree*(kappa^2))
-
+     tau_b <- n_tree
 
      # Getting the naive sigma value
      nsigma <- naive_sigma(x = x_train_scale,y = y_scale)
@@ -62,14 +67,19 @@ rbart <- function(x_train,
      lambda <- (nsigma*nsigma*qchi)/df
      d_tau <- (lambda*df)/2
 
+     # Defining a_tau_b and d_tau_b
+     a_tau_b <- n_tree*10
+     d_tau_b <- 10
 
      # Call the bart function
      tau_init <- nsigma^(-2)
      mu_init <- mean(y_scale)
 
+     # Creating the vector that stores all trees
+     all_tree_post <- vector("list",length = round(n_mcmc-n_burn))
 
      # Generating the BART obj
-     bart_obj <- bart(x_train_scale,
+     bart_obj <- sbart(x_train_scale,
           y_scale,
           x_test_scale,
           n_tree,
@@ -79,20 +89,43 @@ rbart <- function(x_train,
           mu_init,
           tau_mu,
           tau_b,
+          tau_b, # Same initial value as tau_b
           alpha,
           beta,
-          a_tau,d_tau)
+          a_tau,d_tau,
+          a_tau_b,d_tau_b)
 
 
-     # Tidying up the posterior elements
-     y_train_post <- unnormalize_bart(z = bart_obj[[1]],a = min_y,b = max_y)
-     y_test_post <- unnormalize_bart(z = bart_obj[[2]],a = min_y,b = max_y)
-     tau_post <- bart_obj[[3]]/((max_y-min_y)^2)
+     if(scale_bool){
+             # Tidying up the posterior elements
+             y_train_post <- unnormalize_bart(z = bart_obj[[1]],a = min_y,b = max_y)
+             y_test_post <- unnormalize_bart(z = bart_obj[[2]],a = min_y,b = max_y)
+             for(i in 1:round(n_mcmc-n_burn)){
+                     all_tree_post[[i]] <-  unnormalize_bart(z = bart_obj[[4]][,,i],a = min_y,b = max_y)
+             }
+             tau_post <- bart_obj[[3]]/((max_y-min_y)^2)
+             tau_b_post <-  bart_obj[[5]]/((max_y-min_y)^2)
+             tau_b_post_intercept <-  bart_obj[[6]]/((max_y-min_y)^2)
+
+     } else {
+             y_train_post <- bart_obj[[1]]
+             y_test_post <- bart_obj[[2]]
+             tau_post <- bart_obj[[3]]
+             for(i in 1:round(n_mcmc-n_burn)){
+                     all_tree_post[[i]] <-  bart_obj[[4]][,,i]
+             }
+             tau_b_post <-  bart_obj[[5]]
+             tau_b_post_intercept <-  bart_obj[[6]]
+
+     }
 
      # Return the list with all objects and parameters
      return(list(y_hat = y_train_post,
                  y_hat_test = y_test_post,
                  tau_post = tau_post,
+                 tau_b_post = tau_b_post,
+                 tau_b_post_intercept = tau_b_post_intercept,
+                 all_tree_post = all_tree_post,
                  prior = list(n_tree = n_tree,
                               alpha = alpha,
                               beta = beta,
